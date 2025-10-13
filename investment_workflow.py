@@ -1,121 +1,113 @@
 import pandas as pd
 import os
+import sys
+import yfinance as yf
+import pandas_ta as ta
 from datetime import datetime
 import pytz
-from index_screener import find_undervalued_stocks
+
+# 경로 문제 해결을 위해 프로젝트 루트를 sys.path에 추가
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+if PROJECT_ROOT not in sys.path:
+    sys.path.append(PROJECT_ROOT)
+
+from index_screener import get_index_tickers
 from trading_strategy_analyzer import find_buy_signals
+from fundamental_analyzer import get_fundamental_analysis
 
 def run_investment_workflow(use_cache=True):
     """
-    스마트 캐시, 최적화, 자동 재시도 기능이 포함된 2단계 투자 분석 워크플로우를 실행합니다.
-    
-    Args:
-        use_cache (bool): 캐시 기능을 사용할지 여부. True이면 오늘자 캐시 파일을 재활용합니다.
+    최적화된 3단계 투자 분석 워크플로우를 실행합니다.
     """
     # --- 0. 분석 조건 설정 ---
-    #screener_index_name = "NASDAQ100" # "SP500" 또는 "NASDAQ100" 선택
-    screener_index_name = "SP500" # "SP500" 또는 "NASDAQ100" 선택
-    screener_rsi_period = 14
-    screener_rsi_threshold = 60
-    screener_use_peg_filter = False
-    screener_peg_threshold = 2.0
+    screener_index_name = "SP500"
+    if len(sys.argv) > 1 and sys.argv[1] in ["SP500", "NASDAQ100"]:
+        screener_index_name = sys.argv[1]
     
-    analyzer_rsi_period = 14
+    screener_rsi_threshold = 60
+    analyzer_min_signals_to_find = 5
     analyzer_initial_rsi_threshold = 40
     analyzer_max_rsi_threshold = screener_rsi_threshold
-    analyzer_min_signals_to_find = 5 # 최소한 찾아야 할 매수 신호 개수
     analyzer_use_strict_filter = False
-    analyzer_bollinger_band_mode ='normal' # 'relaxed' #'strict'
+    analyzer_bollinger_band_mode = 'normal'
     analyzer_bollinger_band_relaxed_pct = 5.0
     analyzer_use_volume_filter = False
 
-    # --- 1. 오래된 캐시 정리 및 캐시 파일명 정의 (뉴욕 시간대 기준) ---
-    ny_timezone = pytz.timezone("America/New_York")
-    today = datetime.now(ny_timezone).date()
-    
-    peg_status_str = "pegON" if screener_use_peg_filter else "pegOFF"
-    # 캐시 파일명에 지수 이름 추가 (공백, & 제거 후 대문자)
-    cleaned_index_name = screener_index_name.replace(' ', '').replace('&', '').upper()
-    cache_filename = f"watchlist_{cleaned_index_name}_{today.strftime('%Y-%m-%d')}_rsi{screener_rsi_threshold}_{peg_status_str}.csv"
+    # --- 1. 데이터 사전 로딩 및 지표 계산 ---
+    print(f"--- 1단계: {screener_index_name} 데이터 사전 로딩 및 지표 계산 시작 ---")
+    all_tickers = get_index_tickers(screener_index_name)
+    all_ticker_data = {}
+    for i, ticker in enumerate(all_tickers):
+        print(f"  - 진행: [{i + 1}/{len(all_tickers)}] {ticker} 데이터 로딩 중...", end='\r')
+        try:
+            df = yf.download(ticker, period="250d", auto_adjust=True, progress=False, timeout=10)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.droplevel(1)
 
-    print(f"--- 0단계: 오래된 캐시 파일 정리 (기준일: {today.strftime('%Y-%m-%d')} 뉴욕) ---")
-    for f in os.listdir('.'):
-        # 변경된 파일명 형식에 맞게 시작 부분 확인
-        if f.startswith(f'watchlist_{cleaned_index_name}_') and f.endswith('.csv'):
-            try:
-                # 파일명에서 날짜 부분 추출 (예: watchlist_SP500_2023-10-27_...)
-                file_date_str = f.split('_')[2] # 인덱스 이름이 간결해져 날짜 인덱스 변경
-                file_date = datetime.strptime(file_date_str, '%Y-%m-%d').date()
-                if file_date < today:
-                    os.remove(f)
-                    print(f"- 오래된 캐시 파일 삭제: {f}")
-            except (IndexError, ValueError):
+            if df.empty:
                 continue
+            
+            df.ta.sma(length=20, append=True)
+            df.ta.sma(length=50, append=True)
+            df.ta.sma(length=200, append=True)
+            df.ta.rsi(length=14, append=True)
+            bbands = df.ta.bbands(length=20, std=2.0)
+            if bbands is not None and not bbands.empty:
+                df['BBL_20_2.0'] = bbands.iloc[:, 0]
+            df['VOLUME_SMA_20'] = df.ta.sma(close=df['Volume'], length=20)
+            
+            all_ticker_data[ticker] = df
+        except Exception as e:
+            print(f"\n  - 오류 발생 [{ticker}]: {e}")
+            continue
+    print("\n--- 데이터 로딩 및 계산 완료 ---")
 
-    # --- 2. 저평가 후보 종목 발굴 (Screener) ---
-    watchlist_df = pd.DataFrame() # 초기화
-    if use_cache and os.path.exists(cache_filename):
-        print(f"\n--- 1단계: 캐시된 관심 종목 리스트 사용 ({screener_index_name}) ---")
-        print(f"- 파일: {cache_filename}")
-        watchlist_df = pd.read_csv(cache_filename)
-    
-    if watchlist_df.empty:
-        print(f"\n--- 1단계: 저평가 후보 종목 신규 발굴 시작 ({screener_index_name}) ---")
-        print(f"[RSI 조건] Period: {screener_rsi_period}, Threshold: < {screener_rsi_threshold}")
-        if screener_use_peg_filter:
-            print(f"[PEG 조건] 0 < PEG < {screener_peg_threshold}")
-        else:
-            print("[PEG 조건] 비활성화")
-        
-        undervalued_candidates = find_undervalued_stocks(
-            rsi_period=screener_rsi_period,
-            rsi_threshold=screener_rsi_threshold, 
-            peg_threshold=screener_peg_threshold,
-            use_peg_filter=screener_use_peg_filter,
-            index_name=screener_index_name # 지수 이름 전달
-        )
-        if undervalued_candidates:
-            watchlist_df = pd.DataFrame(undervalued_candidates)
-            if use_cache:
-                print(f"\n- 결과를 캐시 파일에 저장: {cache_filename}")
-                watchlist_df.to_csv(cache_filename, index=False)
+    # --- 2. 저평가 후보 종목 스크리닝 (메모리 기반) ---
+    watchlist_data = {}
+    print("\n--- 2단계: 저평가 후보 종목 스크리닝 (메모리 기반) ---")
+    debug_count = 0
+    for ticker, df in all_ticker_data.items():
+        if not df.empty and 'RSI_14' in df.columns:
+            latest_rsi = df.iloc[-1]['RSI_14']
 
-    if watchlist_df.empty:
-        print("\n1단계: 저평가 후보 종목을 찾지 못했습니다. 워크플로우를 종료합니다.")
+            # --- DEBUG PRINT START ---
+            if debug_count < 20:
+                print(f"  [DEBUG] Ticker: {ticker}, Latest RSI: {latest_rsi}")
+                debug_count += 1
+            # --- DEBUG PRINT END ---
+
+            if pd.notna(latest_rsi) and latest_rsi < screener_rsi_threshold:
+                watchlist_data[ticker] = df
+
+    if not watchlist_data:
+        print("\n1단계 스크리닝 결과, 저평가 후보 종목을 찾지 못했습니다.")
         return
-    
-    print("\n--- 1단계 결과: 최종 관심 종목 리스트 ---")
-    print(watchlist_df.to_string(index=False))
 
-    # --- 3. 매수 타이밍 포착 (최적화 및 반복 재시도) ---
+    print(f"\n--- 1단계 결과: 최종 관심 종목 리스트 ({len(watchlist_data)}개) ---")
+    print(", ".join(watchlist_data.keys()))
+
+    # --- 3. 매수 타이밍 포착 (메모리 기반) ---
     print("\n\n--- 2단계: 매수 타이밍 포착 시작 ---")
-    print(f"[추세 조건] {"엄격 모드" if analyzer_use_strict_filter else "완화 모드"}")
-    print(f"[볼린저밴드 조건] {analyzer_bollinger_band_mode} 모드 (근접률: {analyzer_bollinger_band_relaxed_pct}%) ")
-    print(f"[거래량 조건] {"활성화" if analyzer_use_volume_filter else "비활성화"}")
+    print(f"[추세 조건] {'엄격 모드' if analyzer_use_strict_filter else '완화 모드'}")
 
     analyzer_rsi_threshold = analyzer_initial_rsi_threshold
-    previous_rsi_threshold = 0
-    final_buy_signals = []
-    # 최소 신호 개수를 찾거나 최대 RSI 기준에 도달할 때까지 반복
-    while analyzer_rsi_threshold <= analyzer_max_rsi_threshold and len(final_buy_signals) < analyzer_min_signals_to_find:
-        print(f"\n- RSI {analyzer_rsi_threshold} 기준으로 매수 신호 분석 시도 (Period: {analyzer_rsi_period})...")
+    cumulative_signals = set() # 누적 신호를 저장할 set
+    final_buy_signals = [] # 최종 결과
+
+    while analyzer_rsi_threshold <= analyzer_max_rsi_threshold:
+        print(f"\n- RSI < {analyzer_rsi_threshold} 기준으로 매수 신호 분석 시도...")
         
-        eligible_df = watchlist_df[
-            (watchlist_df['rsi'] < analyzer_rsi_threshold) & 
-            (watchlist_df['rsi'] >= previous_rsi_threshold)
-        ]
-        if eligible_df.empty:
-            print("  -> 이 기준 범위에 해당하는 분석 대상 종목이 없습니다. 다음 기준으로 넘어갑니다.")
-            previous_rsi_threshold = analyzer_rsi_threshold
+        eligible_data = {ticker: df for ticker, df in watchlist_data.items() if not df.empty and df.iloc[-1].get('RSI_14', float('inf')) < screener_rsi_threshold} # 스크리너 RSI 기준을 따름
+        
+        if not eligible_data:
+            print("  -> 이 기준에 해당하는 분석 대상 종목이 없습니다.")
             analyzer_rsi_threshold += 5
             continue
 
-        eligible_tickers = eligible_df['ticker'].tolist()
-        print(f"  -> 분석 대상: {len(eligible_tickers)}개 종목")
+        print(f"  -> 분석 대상: {len(eligible_data)}개 종목")
 
         current_signals = find_buy_signals(
-            eligible_tickers, 
-            rsi_period=analyzer_rsi_period,
+            eligible_data,
             rsi_threshold=analyzer_rsi_threshold,
             use_strict_filter=analyzer_use_strict_filter,
             bollinger_band_mode=analyzer_bollinger_band_mode,
@@ -124,23 +116,45 @@ def run_investment_workflow(use_cache=True):
         )
         
         if current_signals:
-            print(f"  -> 신호 발견! (RSI: {analyzer_rsi_threshold}, {len(current_signals)}개) ")
-            final_buy_signals.extend(current_signals) # 현재 찾은 신호들을 최종 리스트에 추가
+            cumulative_signals.update(current_signals) # 찾은 신호 누적
+            print(f"  -> 신호 발견! (RSI: {analyzer_rsi_threshold}, {len(current_signals)}개 추가, 누적 {len(cumulative_signals)}개)")
         else:
             print("  -> 신호 없음.")
         
-        # 다음 반복을 위해 RSI 기준 업데이트
-        previous_rsi_threshold = analyzer_rsi_threshold
+        if len(cumulative_signals) >= analyzer_min_signals_to_find:
+            print(f"  -> 목표 신호 개수({analyzer_min_signals_to_find}개) 달성. 분석을 종료합니다.")
+            final_buy_signals = list(cumulative_signals) # 최종 결과에 할당
+            break
+        
         analyzer_rsi_threshold += 5
 
-    # --- 최종 결과 출력 ---
+    # 루프가 끝까지 돌았지만 목표 개수를 채우지 못했을 경우
+    # final_buy_signals는 항상 cumulative_signals의 최종 내용을 담도록 합니다.
+    final_buy_signals = list(cumulative_signals)
+
+    # --- 4. 최종 결과 및 펀더멘탈 분석 ---
     if not final_buy_signals:
         print(f"\n\n--- 최종 결과: 모든 RSI 기준({analyzer_initial_rsi_threshold}~{analyzer_max_rsi_threshold})에서 매수 신호를 찾지 못했습니다. ---")
         return
 
-    print(f"\n\n--- 최종 결과: 지금 매수 신호가 포착된 종목 ({len(final_buy_signals)}개) ---")
-    for ticker in final_buy_signals:
-        print(f"  -> {ticker}")
+    unique_signals = sorted(list(set(final_buy_signals)))
+    print(f"\n\n--- 최종 결과: 지금 매수 신호가 포착된 종목 ({len(unique_signals)}개) ---")
+    print(", ".join(unique_signals))
+
+    result_filepath = os.path.join(PROJECT_ROOT, "fundamental_analysis_results.txt")
+    print(f"\n--- 3단계: 최종 후보 펀더멘탈 심층 분석 (결과 파일: {result_filepath}) ---")
+    with open(result_filepath, "w", encoding="utf-8") as f:
+        f.write(f"--- 최종 후보 펀더멘탈 심층 분석 ({len(unique_signals)}개) ---\n\n")
+        original_stdout = sys.stdout
+        sys.stdout = f
+        try:
+            for ticker in unique_signals:
+                get_fundamental_analysis(ticker)
+                print("-" * 50 + "\n")
+        finally:
+            sys.stdout = original_stdout
+
+    print("분석 완료.")
 
 if __name__ == '__main__':
-    run_investment_workflow(use_cache=True)
+    run_investment_workflow(use_cache=False) # 캐시 기능은 현재 아키텍처에서 불필요
