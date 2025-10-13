@@ -71,9 +71,9 @@ nohup python -u discord/bot.py > discord/logs/console.log 2>&1 &
 리눅스 서버 재부팅 시 봇을 자동으로 실행하려면 `crontab -e` 명령어로 편집기를 열고 아래 내용을 추가하세요.
 
 ```bash
-@reboot mkdir -p /home/gemini/project/stock_discord/discord/logs && (cd /home/gemini/project/stock_discord && /usr/bin/python3 -u discord/bot.py) > /home/gemini/project/stock_discord/discord/logs/cron.log 2>&1
+@reboot mkdir -p {project dir}/discord/logs && (cd {project dir} && /usr/bin/python3 -u discord/bot.py) > {project dir}/discord/logs/cron.log 2>&1
 ```
--   **중요**: `/home/gemini/project/stock_discord/` 부분은 실제 프로젝트 경로로 반드시 변경해야 합니다.
+-   **중요**: `{project dir}` 부분은 실제 프로젝트 경로로 반드시 변경해야 합니다.
 
 ### 3. 터미널에서 직접 워크플로우 실행 (테스트/수동 분석용)
 
