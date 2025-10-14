@@ -51,19 +51,20 @@ def find_buy_signals(ticker_dataframes: dict, rsi_threshold=30, short_ma=20, mid
                 if is_uptrend and rsi_crossed_up and touched_bollinger_low:
                     buy_signals.append(ticker)
 
-            if ticker == 'ORLY':
-                print(f"\n--- [DEBUG FOR ORLY] ---")
-                print(f"  - is_uptrend: {is_uptrend}")
-                print(f"    - Close: {last_row['Close']:.2f}, SMA_{long_ma}: {last_row[long_ma_col]:.2f} (Price > Long MA: {last_row['Close'] > last_row[long_ma_col]})")
-                print(f"    - SMA_{mid_ma}: {last_row[mid_ma_col]:.2f}, SMA_{long_ma}: {last_row[long_ma_col]:.2f} (Mid MA > Long MA: {last_row[mid_ma_col] > last_row[long_ma_col]})")
-                print(f"  - rsi_crossed_up: {rsi_crossed_up}")
-                print(f"    - last_rsi: {last_row[rsi_col]:.2f}, prev_rsi: {prev_row[rsi_col]:.2f}, threshold: {rsi_threshold}")
-                print(f"  - touched_bollinger_low: {touched_bollinger_low}")
-                print(f"    - prev_close: {prev_row['Close']:.2f}, prev_bbl: {prev_row[bb_low_col]:.2f}")
-                print(f"  - volume_spike: {volume_spike} (필터 {'활성화' if use_volume_filter else '비활성화'}) ")
-                if use_volume_filter:
-                    print(f"    - last_volume: {last_row['Volume']}, avg_volume: {last_row[vol_sma_col] * 1.5}")
-                print(f"------------------------")
+            # --- [DEBUG FOR ORLY] --- (주석 처리된 디버그 블록)
+            # if ticker == 'ORLY':
+            #     print(f"\n--- [DEBUG FOR ORLY] ---")
+            #     print(f"  - is_uptrend: {is_uptrend}")
+            #     print(f"    - Close: {last_row['Close']:.2f}, SMA_{long_ma}: {last_row[long_ma_col]:.2f} (Price > Long MA: {last_row['Close'] > last_row[long_ma_col]})")
+            #     print(f"    - SMA_{mid_ma}: {last_row[mid_ma_col]:.2f}, SMA_{long_ma}: {last_row[long_ma_col]:.2f} (Mid MA > Long MA: {last_row[mid_ma_col] > last_row[long_ma_col]})")
+            #     print(f"  - rsi_crossed_up: {rsi_crossed_up}")
+            #     print(f"    - last_rsi: {last_row[rsi_col]:.2f}, prev_rsi: {prev_row[rsi_col]:.2f}, threshold: {rsi_threshold}")
+            #     print(f"  - touched_bollinger_low: {touched_bollinger_low}")
+            #     print(f"    - prev_close: {prev_row['Close']:.2f}, prev_bbl: {prev_row[bb_low_col]:.2f}")
+            #     print(f"  - volume_spike: {volume_spike} (필터 {'활성화' if use_volume_filter else '비활성화'}) ")
+            #     if use_volume_filter:
+            #         print(f"    - last_volume: {last_row['Volume']}, avg_volume: {last_row[vol_sma_col] * 1.5}")
+            #     print(f"------------------------")
 
         except Exception as e:
             error_msg = repr(e).strip()

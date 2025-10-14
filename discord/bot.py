@@ -82,7 +82,7 @@ def run_analysis_sync(ticker: str) -> str:
 def run_workflow_sync(index_value: str):
     """동기적으로 워크플로우 스크립트를 실행하는 헬퍼 함수"""
     script_path = os.path.join(PROJECT_ROOT, 'investment_workflow.py')
-    subprocess.run([PYTHON_EXECUTABLE, script_path, index_value], cwd=PROJECT_ROOT, check=True, timeout=1800) # 30분 타임아웃
+    subprocess.run([PYTHON_EXECUTABLE, script_path, index_value], cwd=PROJECT_ROOT, check=True, timeout=900) # 15분 타임아웃
 
 @client.tree.command()
 @app_commands.describe(ticker='분석할 주식 티커 (예: AAPL)')
@@ -105,7 +105,7 @@ def run_workflow_sync(index_value: str):
     """동기적으로 워크플로우 스크립트를 실행하는 헬퍼 함수"""
     script_path = os.path.join(PROJECT_ROOT, 'investment_workflow.py')
     # Popen 대신 run을 사용하고, 작업이 끝날 때까지 기다립니다.
-    subprocess.run(['python', script_path, index_value], cwd=PROJECT_ROOT, check=True, timeout=1800) # 30분 타임아웃
+    subprocess.run([PYTHON_EXECUTABLE, script_path, index_value], cwd=PROJECT_ROOT, check=True, timeout=900) # 15분 타임아웃
 
 @client.tree.command()
 @app_commands.describe(index='분석할 시장 지수를 선택합니다.')
@@ -126,12 +126,28 @@ async def workflow(interaction: discord.Interaction, index: discord.app_commands
         result_filepath = os.path.join(PROJECT_ROOT, "fundamental_analysis_results.txt")
         if os.path.exists(result_filepath):
             with open(result_filepath, "r", encoding="utf-8") as f:
-                output = f.read()
+                full_output = f.read()
             
-            if len(output) > 1980:
-                output = output[:1980] + "... (내용이 너무 길어 잘렸습니다)"
-            
-            await interaction.followup.send(f"**워크플로우 완료!**\n```\n{output}\n```")
+            # investment_workflow.py에서 정의한 구분자를 사용하여 메시지 분할
+            DELIMITER = "\n--- END_OF_CHUNK ---\n"
+            chunks = full_output.split(DELIMITER)
+            chunks = [chunk.strip() for chunk in chunks if chunk.strip()] # 빈 청크 제거
+            total_chunks = len(chunks)
+
+            for i, chunk in enumerate(chunks):
+                header = f"**워크플로우 완료!** (Part {i+1}/{total_chunks})\n" if i == 0 else f"(Part {i+1}/{total_chunks})\n"
+                message_content = f"{header}```\n{chunk}\n```"
+                
+                # 디스코드 메시지 길이 제한(2000자) 확인
+                if len(message_content) > 2000:
+                    message_content = message_content[:1990] + "... (내용이 너무 길어 잘렸습니다)\n```"
+
+                # 첫 메시지는 followup.send로, 이후 메시지는 interaction.channel.send로 보냅니다.
+                if i == 0:
+                    await interaction.followup.send(message_content)
+                else:
+                    await interaction.channel.send(message_content)
+
             os.remove(result_filepath) # 결과 전송 후 파일 삭제
         else:
             await interaction.followup.send("워크플로우는 완료되었으나, 분석 결과 파일이 생성되지 않았습니다.")

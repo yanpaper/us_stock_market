@@ -3,6 +3,7 @@ import os
 import sys
 import yfinance as yf
 import pandas_ta as ta
+import io # io 모듈 임포트
 from datetime import datetime
 import pytz
 
@@ -143,16 +144,35 @@ def run_investment_workflow(use_cache=True):
 
     result_filepath = os.path.join(PROJECT_ROOT, "fundamental_analysis_results.txt")
     print(f"\n--- 3단계: 최종 후보 펀더멘탈 심층 분석 (결과 파일: {result_filepath}) ---")
-    with open(result_filepath, "w", encoding="utf-8") as f:
-        f.write(f"--- 최종 후보 펀더멘탈 심층 분석 ({len(unique_signals)}개) ---\n\n")
-        original_stdout = sys.stdout
-        sys.stdout = f
-        try:
-            for ticker in unique_signals:
+    
+    # 결과를 2개 종목씩 묶어서 파일에 저장
+    chunk_size = 2
+    all_chunks_output = []
+    DELIMITER = "\n--- END_OF_CHUNK ---\n"
+
+    for i in range(0, len(unique_signals), chunk_size):
+        chunk_tickers = unique_signals[i:i+chunk_size]
+        chunk_output_parts = []
+        
+        # 각 종목에 대해 펀더멘탈 분석 수행
+        for ticker in chunk_tickers:
+            # 표준 출력을 임시 StringIO 객체로 리디렉션
+            original_stdout = sys.stdout
+            temp_output = io.StringIO()
+            sys.stdout = temp_output
+            try:
                 get_fundamental_analysis(ticker)
-                print("-" * 50 + "\n")
-        finally:
-            sys.stdout = original_stdout
+                sys.stdout.write("-" * 50 + "\n") # StringIO 객체에 직접 write
+            finally:
+                sys.stdout = original_stdout
+            chunk_output_parts.append(temp_output.getvalue())
+        
+        all_chunks_output.append("\n".join(chunk_output_parts))
+        if i + chunk_size < len(unique_signals):
+            all_chunks_output.append(DELIMITER) # 다음 청크와의 구분자 추가
+
+    with open(result_filepath, "w", encoding="utf-8") as f:
+        f.write("\n".join(all_chunks_output))
 
     print("분석 완료.")
 

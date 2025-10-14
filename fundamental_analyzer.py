@@ -3,6 +3,7 @@ import pandas as pd
 import sys
 import re
 import requests
+import time # time 모듈 임포트
 
 def get_fundamental_analysis(ticker):
     """
@@ -12,20 +13,66 @@ def get_fundamental_analysis(ticker):
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
-        url = f"https://finance.yahoo.com/quote/{ticker}/analysis"
+        url = f"https://finance.yahoo.com/quote/{ticker}/analysis/"
         content = ""
-        try:
-            header = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"}
-            response = requests.get(url, headers=header, timeout=10)
-            response.raise_for_status()
-            content = response.text
-        except Exception as web_e:
-            print(f"  - 참고: Yahoo Finance 웹페이지({url})에 접근 중 오류 발생: {web_e}")
+        
+        # 웹 스크레이핑 시도 (yfinance .analysis 데이터가 없을 경우 폴백용)
+        for attempt in range(3): # 최대 3번 재시도
+            try:
+                header = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+                "Accept-Language": "en-US,en;q=0.9,ko;q=0.8",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Connection": "keep-alive",
+                "Upgrade-Insecure-Requests": "1",
+            }
+                response = requests.get(url, headers=header, timeout=10)
+                response.raise_for_status()
+                content = response.text
+                break # 성공 시 루프 탈출
+            except requests.exceptions.HTTPError as http_err:
+                if http_err.response.status_code == 404:
+                    print(f"  - 디버그: Yahoo Finance 웹페이지({url}) 접근 중 404 오류 발생")
+                    break
+                elif http_err.response.status_code == 503:
+                    print(f"  - 디버그: Yahoo Finance 웹페이지({url}) 접근 중 503 오류 발생 (재시도 {attempt + 1}/3)... {http_err}")
+                    time.sleep(2) # 2초 대기 후 재시도
+                else:
+                    print(f"  - 디버그: Yahoo Finance 웹페이지({url}) 접근 중 HTTP 오류 발생: {http_err}")
+                    break # 다른 HTTP 오류는 재시도 안 함
+            except Exception as web_e:
+                print(f"  - 디버그: Yahoo Finance 웹페이지({url}) 접근 중 기타 오류 발생: {web_e}")
+                break # 기타 오류는 재시도 안 함
 
         # --- 1. 애널리스트 종합 의견 (상세) ---
         recommendation = info.get('recommendationKey', 'N/A').replace('_', ' ').title()
         recommendation_details = ""
-        if content:
+
+        # yfinance의 stock.recommendations 데이터 사용 시도
+        try:
+            recs = stock.recommendations
+            if recs is not None and not recs.empty:
+                # 최신 추천 데이터만 사용
+                latest_recs = recs.iloc[-1]
+                buy_count = latest_recs.get('Buy', 0)
+                hold_count = latest_recs.get('Hold', 0)
+                sell_count = latest_recs.get('Sell', 0)
+                # Underperform, Strong Buy 등 다른 카테고리도 있다면 추가
+                
+                details_list = []
+                if buy_count > 0: details_list.append(f"Buy:{int(buy_count)}")
+                if hold_count > 0: details_list.append(f"Hold:{int(hold_count)}")
+                if sell_count > 0: details_list.append(f"Sell:{int(sell_count)}")
+
+                if details_list:
+                    recommendation_details = f" ({', '.join(details_list)})"
+        except Exception as e:
+            print(f"  - 디버그: yfinance stock.recommendations 접근 중 오류: {e}")
+            pass # 오류 발생 시 웹 스크레이핑 폴백으로 진행
+
+        # stock.recommendations에서 상세 정보를 얻지 못했고, 웹 스크레이핑 content가 있다면 파싱 시도
+        if not recommendation_details and content: 
             try:
                 rec_trends_html = re.search(r'Recommendation Trends(.*?)</div>', content, re.DOTALL)
                 if rec_trends_html:
@@ -38,7 +85,7 @@ def get_fundamental_analysis(ticker):
                     if details:
                         recommendation_details = f" ({', '.join(details)})"
             except Exception as parse_e:
-                pass # 파싱 실패는 무시
+                print(f"  - 디버그: 애널리스트 의견 웹 파싱 실패: {parse_e}")
         
         final_recommendation = f"{recommendation}{recommendation_details}"
 
@@ -52,22 +99,44 @@ def get_fundamental_analysis(ticker):
 
         # --- 2. 성장성 전망 ---
         yoy_growth, five_year_growth = None, None
-        if content:
-            try:
-                earnings_table = re.search(r"Earnings Estimate(.*?)Revenue Estimate", content, re.DOTALL)
-                if earnings_table:
-                    estimates = re.findall(r"Avg. Estimate</td>.*?<span>([\d\.\-]+)</span>", earnings_table.group(1))
-                    if len(estimates) >= 2:
-                        current_year_eps = float(estimates[0])
-                        next_year_eps = float(estimates[1])
-                        if current_year_eps > 0:
-                            yoy_growth = ((next_year_eps - current_year_eps) / current_year_eps) * 100
-                
-                growth_match = re.search(r"Next 5 Years \(per annum\)</td>.*?<span>([\d\.\-%]+)</span>", content)
-                if growth_match:
-                    five_year_growth = float(growth_match.group(1).strip('%'))
-            except Exception as web_e:
-                pass # 웹 스크레이핑 실패는 무시
+        
+        # yfinance .analysis 데이터 우선 사용
+        try:
+            analysis = stock.analysis
+            if analysis is None or analysis.empty:
+                print("  - 디버그: yfinance .analysis 데이터가 비어있습니다. 웹 스크레이핑 시도.")
+                raise ValueError("Empty analysis data") # 웹 스크레이핑 폴백 로직을 타도록 예외 발생
+
+            # yfinance 라이브러리에서 데이터 추출
+            eps_estimate = analysis.loc['Earnings Estimate']
+            current_year_eps = eps_estimate[eps_estimate.index == '0y']['Avg. Estimate'].iloc[0]
+            next_year_eps = eps_estimate[eps_estimate.index == '+1y']['Avg. Estimate'].iloc[0]
+            if current_year_eps and next_year_eps and current_year_eps > 0:
+                yoy_growth = ((next_year_eps - current_year_eps) / current_year_eps) * 100
+
+            growth_estimate = analysis.loc['Growth']
+            five_year_growth_str = growth_estimate[growth_estimate.index == '+5y']['Avg. Estimate'].iloc[0]
+            if isinstance(five_year_growth_str, str) and '%' in five_year_growth_str:
+                five_year_growth = float(five_year_growth_str.strip('%'))
+
+        except Exception:
+            # 폴백(Fallback) 로직: Yahoo Finance 웹에서 직접 데이터 가져오기
+            if content: # 웹 스크레이핑 성공했을 경우에만 파싱 시도
+                try:
+                    earnings_table = re.search(r"Earnings Estimate(.*?)Revenue Estimate", content, re.DOTALL)
+                    if earnings_table:
+                        estimates = re.findall(r"Avg. Estimate</td>.*?<span>([\d\.\-]+)</span>", earnings_table.group(1))
+                        if len(estimates) >= 2:
+                            current_year_eps = float(estimates[0])
+                            next_year_eps = float(estimates[1])
+                            if current_year_eps > 0:
+                                yoy_growth = ((next_year_eps - current_year_eps) / current_year_eps) * 100
+                    
+                    growth_match = re.search(r"Next 5 Years \(per annum\)</td>.*?<span>([\d\.\-%]+)</span>", content)
+                    if growth_match:
+                        five_year_growth = float(growth_match.group(1).strip('%'))
+                except Exception as web_e:
+                    print(f"    - 디버그: 웹 데이터 파싱 실패: {web_e}")
 
         # --- 3. 핵심 통계 ---
         forward_pe = info.get('forwardPE')
@@ -82,7 +151,7 @@ def get_fundamental_analysis(ticker):
             "Current Price": f"{current_price:.2f}" if current_price else "N/A",
             "Upside Potential": f"{upside_potential:.2f}%" if upside_potential is not None else "N/A",
             "Next Year EPS Growth (YoY)": f"{yoy_growth:.2f}%" if yoy_growth is not None else "N/A",
-            "5-Year Growth Estimate (p.a.)": f"{five_year_growth:.2f}%" if five_year_growth is not None else "N/A",
+            "5-Year Growth Estimate": f"{five_year_growth:.2f}%" if five_year_growth is not None else "N/A",
             "Forward P/E": f"{forward_pe:.2f}" if forward_pe else "N/A",
             "Profit Margin": f"{profit_margin:.2f}%",
             "Return on Equity (ROE)": f"{roe:.2f}%"
