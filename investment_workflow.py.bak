@@ -3,12 +3,11 @@ import os
 import sys
 import yfinance as yf
 import pandas_ta as ta
-import io
-import configparser
+import io # io 모듈 임포트
 from datetime import datetime
 import pytz
 
-# 경로 문제 해결 및 config 임포트
+# 경로 문제 해결을 위해 프로젝트 루트를 sys.path에 추가
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
@@ -17,29 +16,23 @@ from index_screener import get_index_tickers
 from trading_strategy_analyzer import find_buy_signals
 from fundamental_analyzer import get_fundamental_analysis
 
-# 설정 파일 로드
-config = configparser.ConfigParser()
-config.read(os.path.join(PROJECT_ROOT, 'config.ini'))
-
-def run_investment_workflow():
+def run_investment_workflow(use_cache=True):
     """
     최적화된 3단계 투자 분석 워크플로우를 실행합니다.
     """
-    # --- 0. 분석 조건 설정 (config.ini에서 로드) ---
-    screener_index_name = config.get('Screener', 'index_name')
+    # --- 0. 분석 조건 설정 ---
+    screener_index_name = "SP500"
     if len(sys.argv) > 1 and sys.argv[1] in ["SP500", "NASDAQ100"]:
         screener_index_name = sys.argv[1]
     
-    screener_rsi_threshold = config.getint('Screener', 'rsi_threshold')
-    analyzer_min_signals_to_find = config.getint('Analyzer', 'min_signals_to_find')
-    analyzer_initial_rsi_threshold = config.getint('Analyzer', 'initial_rsi_threshold')
+    screener_rsi_threshold = 60
+    analyzer_min_signals_to_find = 5
+    analyzer_initial_rsi_threshold = 40
     analyzer_max_rsi_threshold = screener_rsi_threshold
-    analyzer_use_strict_filter = config.getboolean('Analyzer', 'use_strict_filter')
-    analyzer_use_bollinger_band = config.getboolean('Analyzer', 'use_bollinger_band')
-    analyzer_bollinger_band_mode = config.get('Analyzer', 'bollinger_band_mode')
-    analyzer_bollinger_band_relaxed_pct = config.getfloat('Analyzer', 'bollinger_band_relaxed_pct')
-    analyzer_use_volume_filter = config.getboolean('Analyzer', 'use_volume_filter')
-    use_analyst_filter = config.getboolean('Fundamental', 'use_analyst_filter')
+    analyzer_use_strict_filter = False
+    analyzer_bollinger_band_mode = 'normal'
+    analyzer_bollinger_band_relaxed_pct = 5.0
+    analyzer_use_volume_filter = False
 
     # --- 1. 데이터 사전 로딩 및 지표 계산 ---
     print(f"--- 1단계: {screener_index_name} 데이터 사전 로딩 및 지표 계산 시작 ---")
@@ -75,9 +68,17 @@ def run_investment_workflow():
     # --- 2. 저평가 후보 종목 스크리닝 (메모리 기반) ---
     watchlist_data = {}
     print("\n--- 2단계: 저평가 후보 종목 스크리닝 (메모리 기반) ---")
+    debug_count = 0
     for ticker, df in all_ticker_data.items():
         if not df.empty and 'RSI_14' in df.columns:
             latest_rsi = df.iloc[-1]['RSI_14']
+
+            # --- DEBUG PRINT START ---
+            if debug_count < 20:
+                print(f"  [DEBUG] Ticker: {ticker}, Latest RSI: {latest_rsi}")
+                debug_count += 1
+            # --- DEBUG PRINT END ---
+
             if pd.notna(latest_rsi) and latest_rsi < screener_rsi_threshold:
                 watchlist_data[ticker] = df
 
@@ -93,12 +94,14 @@ def run_investment_workflow():
     print(f"[추세 조건] {'엄격 모드' if analyzer_use_strict_filter else '완화 모드'}")
 
     analyzer_rsi_threshold = analyzer_initial_rsi_threshold
-    previous_rsi_threshold = 0
-    cumulative_signals = set()
+    previous_rsi_threshold = 0 # previous_rsi_threshold 초기화
+    cumulative_signals = set() # 누적 신호를 저장할 set
+    final_buy_signals = [] # 최종 결과
 
     while analyzer_rsi_threshold <= analyzer_max_rsi_threshold:
         print(f"\n- RSI < {analyzer_rsi_threshold} 기준으로 매수 신호 분석 시도...")
         
+        # 현재 RSI 기준 범위에 해당하는 종목만 필터링
         eligible_data = {ticker: df for ticker, df in watchlist_data.items() 
                          if not df.empty and 'RSI_14' in df.columns and 
                          df.iloc[-1]['RSI_14'] < analyzer_rsi_threshold and 
@@ -116,14 +119,13 @@ def run_investment_workflow():
             eligible_data,
             rsi_threshold=analyzer_rsi_threshold,
             use_strict_filter=analyzer_use_strict_filter,
-            use_bollinger_band=analyzer_use_bollinger_band,
             bollinger_band_mode=analyzer_bollinger_band_mode,
             bollinger_band_relaxed_pct=analyzer_bollinger_band_relaxed_pct,
             use_volume_filter=analyzer_use_volume_filter
         )
         
         if current_signals:
-            cumulative_signals.update(current_signals)
+            cumulative_signals.update(current_signals) # 찾은 신호 누적
             print(f"  -> 신호 발견! (RSI: {analyzer_rsi_threshold}, {len(current_signals)}개 추가, 누적 {len(cumulative_signals)}개)")
         else:
             print("  -> 신호 없음.")
@@ -132,71 +134,50 @@ def run_investment_workflow():
             print(f"  -> 목표 신호 개수({analyzer_min_signals_to_find}개) 달성. 분석을 종료합니다.")
             break
         
-        previous_rsi_threshold = analyzer_rsi_threshold
+        previous_rsi_threshold = analyzer_rsi_threshold # 다음 반복을 위해 이전 RSI 기준 업데이트
         analyzer_rsi_threshold += 5
 
+    # 루프가 끝까지 돌았지만 목표 개수를 채우지 못했을 경우
+    # final_buy_signals는 항상 cumulative_signals의 최종 내용을 담도록 합니다.
     final_buy_signals = list(cumulative_signals)
 
-    # --- 4. 최종 결과 및 펀더멘탈 필터링 ---
+    # --- 4. 최종 결과 및 펀더멘탈 분석 ---
     if not final_buy_signals:
         print(f"\n\n--- 최종 결과: 모든 RSI 기준({analyzer_initial_rsi_threshold}~{analyzer_max_rsi_threshold})에서 매수 신호를 찾지 못했습니다. ---")
         return
 
     unique_signals = sorted(list(set(final_buy_signals)))
-    print(f"\n\n--- 2단계 결과: 기술적 분석 통과 종목 ({len(unique_signals)}개) ---")
+    print(f"\n\n--- 최종 결과: 지금 매수 신호가 포착된 종목 ({len(unique_signals)}개) ---")
     print(", ".join(unique_signals))
 
-    # --- 3단계: 애널리스트 의견 필터링 (옵션) ---
-    if use_analyst_filter:
-        print("\n--- 3단계: 애널리스트 의견 필터링 시작 (Buy 또는 Strong Buy) ---")
-        fundamental_buy_signals = []
-        for ticker in unique_signals:
-            print(f"  - {ticker} 펀더멘탈 확인 중...", end='\r')
-            try:
-                stock = yf.Ticker(ticker)
-                recommendation = stock.info.get('recommendationKey')
-                if recommendation in ['buy', 'strong_buy']:
-                    fundamental_buy_signals.append(ticker)
-            except Exception:
-                continue
-        print("\n필터링 완료!")
-
-        if not fundamental_buy_signals:
-            print("\n--- 최종 결과: 애널리스트 의견이 Buy/Strong Buy인 종목이 없습니다. ---")
-            return
-        
-        final_signals_to_analyze = fundamental_buy_signals
-    else:
-        final_signals_to_analyze = unique_signals
-
-    # --- 4. 최종 후보 펀더멘탈 심층 분석 ---
-    print(f"\n\n--- 최종 결과: 지금 매수 신호가 포착된 종목 ({len(final_signals_to_analyze)}개) ---")
-    print(", ".join(final_signals_to_analyze))
-
     result_filepath = os.path.join(PROJECT_ROOT, "fundamental_analysis_results.txt")
-    print(f"\n--- 4단계: 최종 후보 펀더멘탈 심층 분석 (결과 파일: {result_filepath}) ---")
+    print(f"\n--- 3단계: 최종 후보 펀더멘탈 심층 분석 (결과 파일: {result_filepath}) ---")
     
+    # 결과를 2개 종목씩 묶어서 파일에 저장
     chunk_size = 2
     all_chunks_output = []
+    DELIMITER = "\n--- END_OF_CHUNK ---\n"
 
-    for i in range(0, len(final_signals_to_analyze), chunk_size):
-        chunk_tickers = final_signals_to_analyze[i:i+chunk_size]
-        chunk_output = []
+    for i in range(0, len(unique_signals), chunk_size):
+        chunk_tickers = unique_signals[i:i+chunk_size]
+        chunk_output_parts = []
         
-        chunk_output.append(f"--- 펀더멘탈 분석 (Part {i//chunk_size + 1}/{len(final_signals_to_analyze)//chunk_size + (1 if len(final_signals_to_analyze)%chunk_size > 0 else 0)}) ---\n")
-
+        # 각 종목에 대해 펀더멘탈 분석 수행
         for ticker in chunk_tickers:
+            # 표준 출력을 임시 StringIO 객체로 리디렉션
             original_stdout = sys.stdout
             temp_output = io.StringIO()
             sys.stdout = temp_output
             try:
                 get_fundamental_analysis(ticker)
-                sys.stdout.write("-" * 50 + "\n")
+                sys.stdout.write("-" * 50 + "\n") # StringIO 객체에 직접 write
             finally:
                 sys.stdout = original_stdout
-            chunk_output.append(temp_output.getvalue())
+            chunk_output_parts.append(temp_output.getvalue())
         
-        all_chunks_output.append("\n".join(chunk_output))
+        all_chunks_output.append("\n".join(chunk_output_parts))
+        if i + chunk_size < len(unique_signals):
+            all_chunks_output.append(DELIMITER) # 다음 청크와의 구분자 추가
 
     with open(result_filepath, "w", encoding="utf-8") as f:
         f.write("\n".join(all_chunks_output))
@@ -204,11 +185,11 @@ def run_investment_workflow():
     # 디스코드 요약 메시지를 위한 별도 파일 생성
     summary_filepath = os.path.join(PROJECT_ROOT, "workflow_summary.txt")
     with open(summary_filepath, "w", encoding="utf-8") as f:
-        f.write(f"**분석 완료!** 최종 매수 신호 종목 ({len(final_signals_to_analyze)}개)를 찾았습니다.\n")
-        f.write(f"티커: {', '.join(final_signals_to_analyze)}\n")
+        f.write(f"**분석 완료!** 최종 매수 신호 종목 ({len(unique_signals)}개)를 찾았습니다.\n")
+        f.write(f"티커: {', '.join(unique_signals)}\n")
         f.write("상세 리포트를 보려면 `/report` 명령어를 사용하세요.")
 
     print("분석 완료.")
 
 if __name__ == '__main__':
-    run_investment_workflow()
+    run_investment_workflow(use_cache=False) # 캐시 기능은 현재 아키텍처에서 불필요

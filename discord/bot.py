@@ -3,21 +3,22 @@ import os
 import subprocess
 import json
 import logging
+import asyncio
+import sys
 from discord import app_commands
 
 # --- 설정 파일 로드 ---
 def load_config():
-    # 스크립트의 현재 위치를 기준으로 config.json의 절대 경로를 만듭니다.
-    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
+    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'secrets.json')
     with open(config_path, 'r') as f:
         return json.load(f)
 
 config = load_config()
 TOKEN = config['bot_token']
 GUILD_ID = config['guild_id']
+WEBHOOK_URL = config['webhook_url']
 
 # --- 로깅 설정 ---
-# Critical 로그만 discord/logs/critical.log 파일에 저장
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 log_dir = os.path.join(PROJECT_ROOT, 'discord', 'logs')
 if not os.path.exists(log_dir):
@@ -31,6 +32,7 @@ logger.addHandler(handler)
 
 # --- 봇 설정 ---
 MY_GUILD = discord.Object(id=GUILD_ID)
+PYTHON_EXECUTABLE = sys.executable
 
 class MyClient(discord.Client):
     def __init__(self, *, intents: discord.Intents):
@@ -50,28 +52,8 @@ async def on_ready():
     print(f'로그인: {client.user} (ID: {client.user.id})')
     print('------')
 
-# --- 명령어 정의 ---
-# subprocess 실행 경로를 프로젝트 루트 디렉토리로 설정
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-import asyncio
-
-# ... (기존 임포트 생략) ...
-
-# --- 명령어 정의 ---
-# ... (중략) ...
-
-import sys
-
-PYTHON_EXECUTABLE = sys.executable
-
-# ... (기존 임포트 생략) ...
-
-# --- 명령어 정의 ---
-# ... (중략) ...
-
+# --- 헬퍼 함수 ---
 def run_analysis_sync(ticker: str) -> str:
-    """동기적으로 분석 스크립트를 실행하고 결과를 반환하는 헬퍼 함수"""
     script_path = os.path.join(PROJECT_ROOT, 'combined_analyzer.py')
     result = subprocess.run(
         [PYTHON_EXECUTABLE, script_path, ticker],
@@ -80,32 +62,24 @@ def run_analysis_sync(ticker: str) -> str:
     return result.stdout
 
 def run_workflow_sync(index_value: str):
-    """동기적으로 워크플로우 스크립트를 실행하는 헬퍼 함수"""
     script_path = os.path.join(PROJECT_ROOT, 'investment_workflow.py')
-    subprocess.run([PYTHON_EXECUTABLE, script_path, index_value], cwd=PROJECT_ROOT, check=True, timeout=900) # 15분 타임아웃
+    subprocess.run([PYTHON_EXECUTABLE, script_path, index_value], cwd=PROJECT_ROOT, check=True, timeout=900)
 
+# --- 명령어 정의 ---
 @client.tree.command()
 @app_commands.describe(ticker='분석할 주식 티커 (예: AAPL)')
 async def stock(interaction: discord.Interaction, ticker: str):
     """특정 티커의 종합 분석(기술적+펀더멘탈)을 수행합니다."""
     await interaction.response.defer(thinking=True)
     try:
-        # 동기 함수를 별도 스레드에서 실행하여 봇의 응답을 유지합니다.
         output = await asyncio.to_thread(run_analysis_sync, ticker)
-        
         if len(output) > 1980:
             output = output[:1980] + "... (내용이 너무 길어 잘렸습니다)"
         await interaction.followup.send(f"```\n{output}\n```")
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-        error_message = e.stderr or str(e)
+    except Exception as e:
+        error_message = e.stderr if hasattr(e, 'stderr') else str(e)
         logger.critical(f"/stock 명령어 오류 ({ticker}): {error_message}")
         await interaction.followup.send(f"'{ticker}' 분석 중 오류가 발생했습니다. 관리자가 로그를 확인해야 합니다.")
-
-def run_workflow_sync(index_value: str):
-    """동기적으로 워크플로우 스크립트를 실행하는 헬퍼 함수"""
-    script_path = os.path.join(PROJECT_ROOT, 'investment_workflow.py')
-    # Popen 대신 run을 사용하고, 작업이 끝날 때까지 기다립니다.
-    subprocess.run([PYTHON_EXECUTABLE, script_path, index_value], cwd=PROJECT_ROOT, check=True, timeout=900) # 15분 타임아웃
 
 @client.tree.command()
 @app_commands.describe(index='분석할 시장 지수를 선택합니다.')
@@ -117,45 +91,63 @@ async def workflow(interaction: discord.Interaction, index: discord.app_commands
     """선택한 시장 지수에 대한 전체 투자 분석 워크플로우를 시작합니다."""
     await interaction.response.defer(thinking=True)
     try:
-        await interaction.followup.send(f"{index.name} 지수에 대한 전체 투자 분석 워크플로우를 시작합니다. 최대 30분까지 소요될 수 있으며, 완료되면 이곳에 결과를 게시합니다.")
+        await interaction.followup.send(f"{index.name} 지수에 대한 전체 투자 분석 워크플로우를 시작합니다. 최대 15분까지 소요될 수 있으며, 완료되면 요약 결과를 게시합니다.")
         
-        # 동기 함수를 별도 스레드에서 실행
         await asyncio.to_thread(run_workflow_sync, index.value)
 
-        # 결과 파일을 읽어서 디스코드에 전송
+        await asyncio.sleep(1) # 파일 시스템 I/O 지연을 위한 1초 대기
+
+        summary_filepath = os.path.join(PROJECT_ROOT, "workflow_summary.txt")
+        if os.path.exists(summary_filepath):
+            with open(summary_filepath, "r", encoding="utf-8") as f:
+                summary_output = f.read()
+            await interaction.followup.send(summary_output)
+            os.remove(summary_filepath)
+        else:
+            await interaction.followup.send("워크플로우는 완료되었으나, 요약 파일이 생성되지 않았습니다.")
+
+    except Exception as e:
+        error_message = e.stderr if hasattr(e, 'stderr') else str(e)
+        logger.critical(f"/workflow 명령어 오류 ({index.name}): {error_message}")
+        await interaction.followup.send(f"워크플로우 실행 중 오류가 발생했습니다. 관리자가 로그를 확인해야 합니다.")
+
+@client.tree.command()
+async def report(interaction: discord.Interaction):
+    """가장 최근에 실행된 워크플로우의 상세 분석 리포트를 확인합니다."""
+    await interaction.response.defer(thinking=True)
+    try:
         result_filepath = os.path.join(PROJECT_ROOT, "fundamental_analysis_results.txt")
         if os.path.exists(result_filepath):
             with open(result_filepath, "r", encoding="utf-8") as f:
                 full_output = f.read()
             
-            # investment_workflow.py에서 정의한 구분자를 사용하여 메시지 분할
-            DELIMITER = "\n--- END_OF_CHUNK ---\n"
-            chunks = full_output.split(DELIMITER)
-            chunks = [chunk.strip() for chunk in chunks if chunk.strip()] # 빈 청크 제거
-            total_chunks = len(chunks)
+            # "--- 펀더멘탈 분석"을 기준으로 메시지 분할
+            chunks = full_output.split("--- 펀더멘탈 분석")
+            chunks = [chunk.strip() for chunk in chunks if chunk.strip()]
 
-            for i, chunk in enumerate(chunks):
-                header = f"**워크플로우 완료!** (Part {i+1}/{total_chunks})\n" if i == 0 else f"(Part {i+1}/{total_chunks})\n"
-                message_content = f"{header}```\n{chunk}\n```"
-                
-                # 디스코드 메시지 길이 제한(2000자) 확인
-                if len(message_content) > 2000:
-                    message_content = message_content[:1990] + "... (내용이 너무 길어 잘렸습니다)\n```"
+            if not chunks:
+                await interaction.followup.send("상세 리포트 파일은 있으나 내용이 비어있습니다.")
+            else:
+                for i, chunk in enumerate(chunks):
+                    message_content = f"--- 펀더멘탈 분석{chunk}"
+                    if len(message_content) > 1980:
+                        message_content = message_content[:1980] + "... (내용이 너무 길어 잘렸습니다)"
+                    
+                    if i == 0:
+                        await interaction.followup.send(f"**상세 리포트**\n```\n{message_content}\n```")
+                    else:
+                        await interaction.channel.send(f"```\n{message_content}\n```")
 
-                # 첫 메시지는 followup.send로, 이후 메시지는 interaction.channel.send로 보냅니다.
-                if i == 0:
-                    await interaction.followup.send(message_content)
-                else:
-                    await interaction.channel.send(message_content)
-
-            os.remove(result_filepath) # 결과 전송 후 파일 삭제
+            os.remove(result_filepath)
         else:
-            await interaction.followup.send("워크플로우는 완료되었으나, 분석 결과 파일이 생성되지 않았습니다.")
+            await interaction.followup.send("표시할 상세 리포트가 없습니다. 먼저 `/workflow`를 실행해주세요.")
 
     except Exception as e:
-        error_message = e.stderr or str(e) if hasattr(e, 'stderr') else str(e)
-        logger.critical(f"/workflow 명령어 오류 ({index.name}): {error_message}")
-        await interaction.followup.send(f"워크플로우 실행 중 오류가 발생했습니다. 관리자가 로그를 확인해야 합니다.")
+        error_message = e.stderr if hasattr(e, 'stderr') else str(e)
+        logger.critical(f"/report 명령어 오류: {error_message}")
+        await interaction.followup.send("리포트 생성 중 오류가 발생했습니다. 관리자가 로그를 확인해야 합니다.")
+
+
 
 # --- 봇 실행 ---
 if TOKEN == "YOUR_DISCORD_BOT_TOKEN" or GUILD_ID == 0:

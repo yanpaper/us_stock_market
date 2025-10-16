@@ -3,7 +3,7 @@ import pandas_ta as ta
 import pandas as pd
 import time
 
-def find_buy_signals(ticker_dataframes: dict, rsi_threshold=30, short_ma=20, mid_ma=50, long_ma=200, use_strict_filter=False, rsi_period=14, bollinger_band_mode='relaxed', bollinger_band_relaxed_pct=1.0, use_volume_filter=True):
+def find_buy_signals(ticker_dataframes: dict, rsi_threshold=30, short_ma=20, mid_ma=50, long_ma=200, use_strict_filter=False, rsi_period=14, use_bollinger_band=False, bollinger_band_mode='relaxed', bollinger_band_relaxed_pct=1.0, use_volume_filter=True):
     """
     미리 계산된 데이터프레임에 대해 매수 신호 분석을 수행합니다.
     """
@@ -32,23 +32,26 @@ def find_buy_signals(ticker_dataframes: dict, rsi_threshold=30, short_ma=20, mid
                 is_uptrend = (last_row['Close'] > last_row[long_ma_col]) and \
                              (last_row[mid_ma_col] > last_row[long_ma_col])
 
-            rsi_crossed_up = last_row[rsi_col] > rsi_threshold and prev_row[rsi_col] < rsi_threshold
+            rsi_is_below_threshold = last_row[rsi_col] < rsi_threshold
             
-            if bollinger_band_mode == 'strict':
-                touched_bollinger_low = prev_row['Close'] < prev_row[bb_low_col]
-            elif bollinger_band_mode == 'relaxed':
-                touched_bollinger_low = prev_row['Close'] <= (prev_row[bb_low_col] * (1 + bollinger_band_relaxed_pct / 100))
-            else: # 'normal'
-                touched_bollinger_low = prev_row['Close'] <= prev_row[bb_low_col]
+            # 볼린저 밴드 조건 확인 (옵션)
+            touched_bollinger_low = True # 기본적으로 True로 설정
+            if use_bollinger_band:
+                if bollinger_band_mode == 'strict':
+                    touched_bollinger_low = prev_row['Close'] < prev_row[bb_low_col]
+                elif bollinger_band_mode == 'relaxed':
+                    touched_bollinger_low = prev_row['Close'] <= (prev_row[bb_low_col] * (1 + bollinger_band_relaxed_pct / 100))
+                else: # 'normal'
+                    touched_bollinger_low = prev_row['Close'] <= prev_row[bb_low_col]
             
             volume_spike = False # 기본값 초기화
             # 거래량 필터 사용 여부에 따라 최종 조건 분기
             if use_volume_filter:
                 volume_spike = last_row['Volume'] > last_row[vol_sma_col] * 1.5
-                if is_uptrend and rsi_crossed_up and touched_bollinger_low and volume_spike:
+                if is_uptrend and rsi_is_below_threshold and touched_bollinger_low and volume_spike:
                     buy_signals.append(ticker)
             else: # 'normal'
-                if is_uptrend and rsi_crossed_up and touched_bollinger_low:
+                if is_uptrend and rsi_is_below_threshold and touched_bollinger_low:
                     buy_signals.append(ticker)
 
             # --- [DEBUG FOR ORLY] --- (주석 처리된 디버그 블록)

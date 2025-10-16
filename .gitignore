@@ -4,5 +4,5 @@
 # Python cache
 __pycache__/
 
-# Discord bot config (contains sensitive token)
-discord/config.json
+# Secret files
+discord/secrets.json

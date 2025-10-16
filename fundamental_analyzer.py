@@ -55,15 +55,13 @@ def get_fundamental_analysis(ticker):
             if recs is not None and not recs.empty:
                 # 최신 추천 데이터만 사용
                 latest_recs = recs.iloc[-1]
-                buy_count = latest_recs.get('Buy', 0)
-                hold_count = latest_recs.get('Hold', 0)
-                sell_count = latest_recs.get('Sell', 0)
-                # Underperform, Strong Buy 등 다른 카테고리도 있다면 추가
-                
                 details_list = []
-                if buy_count > 0: details_list.append(f"Buy:{int(buy_count)}")
-                if hold_count > 0: details_list.append(f"Hold:{int(hold_count)}")
-                if sell_count > 0: details_list.append(f"Sell:{int(sell_count)}")
+                # 컬럼 이름을 순회하며 0보다 큰 값을 가진 항목만 추가
+                for rec_type in ['strongBuy', 'buy', 'hold', 'sell', 'strongSell']:
+                    if rec_type in latest_recs and latest_recs[rec_type] > 0:
+                        # 컬럼 이름에서 카멜 케이스를 분리 (예: strongBuy -> Strong Buy)
+                        label = re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', rec_type).title()
+                        details_list.append(f"{label}: {int(latest_recs[rec_type])}")
 
                 if details_list:
                     recommendation_details = f" ({', '.join(details_list)})"
