@@ -5,9 +5,10 @@ import re
 import requests
 import time # time 모듈 임포트
 
-def get_fundamental_analysis(ticker):
+def get_fundamental_analysis(ticker, sector_avg_pe=None):
     """
     yfinance와 웹 스크레이핑을 사용하여 특정 티커에 대한 펀더멘탈 및 애널리스트 분석을 제공합니다.
+    sector_avg_pe 딕셔너리를 받아 산업 평균 P/E를 결과에 포함할 수 있습니다.
     """
     print(f"\n--- {ticker} 펀더멘탈 및 애널리스트 분석 ---")
     try:
@@ -61,7 +62,7 @@ def get_fundamental_analysis(ticker):
                     if rec_type in latest_recs and latest_recs[rec_type] > 0:
                         # 컬럼 이름에서 카멜 케이스를 분리 (예: strongBuy -> Strong Buy)
                         label = re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', rec_type).title()
-                        details_list.append(f"{label}: {int(latest_recs[rec_type])}")
+                        details_list.append(f"{label}:{int(latest_recs[rec_type])}")
 
                 if details_list:
                     recommendation_details = f" ({', '.join(details_list)})"
@@ -79,7 +80,7 @@ def get_fundamental_analysis(ticker):
                     mapping = {'Strong Buy': '강력 매수', 'Buy': '매수', 'Hold': '중립', 'Underperform': '시장 하회', 'Sell': '매도'}
                     for count, key in trends:
                         if key in mapping:
-                            details.append(f"{mapping[key]}: {count}")
+                            details.append(f"{mapping[key]}:{count}")
                     if details:
                         recommendation_details = f" ({', '.join(details)})"
             except Exception as parse_e:
@@ -140,17 +141,35 @@ def get_fundamental_analysis(ticker):
         forward_pe = info.get('forwardPE')
         profit_margin = info.get('profitMargins', 0) * 100
         roe = info.get('returnOnEquity', 0) * 100
+        sector = info.get('sector')
+        avg_pe_for_sector = sector_avg_pe.get(sector) if sector_avg_pe and sector else None
+
+        # P/E 비교 문자열 생성
+        pe_display_string = "N/A"
+        if forward_pe and avg_pe_for_sector:
+            pe_diff = forward_pe - avg_pe_for_sector
+            pe_display_string = f"{forward_pe:.2f} (평균 대비 {pe_diff:+.2f})"
+        elif forward_pe:
+            pe_display_string = f"{forward_pe:.2f} (산업 평균 N/A)"
+
+        # 애널리스트 분석 문자열 생성
+        recommendation_breakdown = recommendation_details.strip(" ()")
+
+        # 현재가 및 상승여력 문자열 생성
+        price_display_string = "N/A"
+        if current_price and upside_potential is not None:
+            price_display_string = f"{current_price:.2f} (Target Upside: {upside_potential:+.2f}%)"
+        elif current_price:
+            price_display_string = f"{current_price:.2f}"
 
         # --- 4. 결과 취합 및 출력 ---
         results = {
-            "Analyst Recommendation": final_recommendation,
-            "Number of Analysts": analyst_count,
-            "Mean Target Price": f"{target_price:.2f}" if target_price else "N/A",
-            "Current Price": f"{current_price:.2f}" if current_price else "N/A",
-            "Upside Potential": f"{upside_potential:.2f}%" if upside_potential is not None else "N/A",
+            "Analyst Recommendation": recommendation,
+            "Detailed": recommendation_breakdown if recommendation_breakdown else "N/A",
+            "Current Price": price_display_string,
             "Next Year EPS Growth (YoY)": f"{yoy_growth:.2f}%" if yoy_growth is not None else "N/A",
             "5-Year Growth Estimate": f"{five_year_growth:.2f}%" if five_year_growth is not None else "N/A",
-            "Forward P/E": f"{forward_pe:.2f}" if forward_pe else "N/A",
+            "Forward P/E (vs Sector)": pe_display_string,
             "Profit Margin": f"{profit_margin:.2f}%",
             "Return on Equity (ROE)": f"{roe:.2f}%"
         }
@@ -162,7 +181,10 @@ def get_fundamental_analysis(ticker):
         # --- 5. 종합 분석 요약 ---
         summary = []
         if analyst_count and recommendation != 'N/A':
-            summary.append(f"애널리스트들은 '{recommendation}' 의견이며, 평균적으로 {results['Upside Potential']}의 주가 상승 여력을 기대합니다 ({analyst_count}명 참여). ")
+            if upside_potential is not None:
+                summary.append(f"애널리스트들은 '{recommendation}' 의견이며, 평균적으로 {upside_potential:.2f}%의 주가 상승 여력을 기대합니다 ({analyst_count}명 참여). ")
+            else:
+                summary.append(f"애널리스트들은 '{recommendation}' 의견입니다 ({analyst_count}명 참여). ")
         
         if yoy_growth is not None or five_year_growth is not None:
             growth_summary = "이는 "
@@ -171,11 +193,11 @@ def get_fundamental_analysis(ticker):
                 if five_year_growth is not None:
                     growth_summary += " 및 "
             if five_year_growth is not None:
-                growth_summary += f"향후 5년 연평균 성장률 전망 {results['5-Year Growth Estimate (p.a.)']}"
+                growth_summary += f"향후 5년 연평균 성장률 전망 {results['5-Year Growth Estimate']}"
             growth_summary += "에 기반한 것으로 보입니다. "
             summary.append(growth_summary)
 
-        summary.append(f"현재 Forward P/E는 {results['Forward P/E']}이며, 수익성은 순이익률 {results['Profit Margin']}, 자기자본이익률 {results['Return on Equity (ROE)']}로 나타납니다.")
+        summary.append(f"현재 {results['Forward P/E (vs Sector)']}이며, 수익성은 순이익률 {results['Profit Margin']}, 자기자본이익률 {results['Return on Equity (ROE)']}로 나타납니다.")
 
         print("\n--- 종합 요약 ---")
         print(' '.join(summary))

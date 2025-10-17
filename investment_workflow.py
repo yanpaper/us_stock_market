@@ -25,12 +25,22 @@ def run_investment_workflow():
     """
     최적화된 3단계 투자 분석 워크플로우를 실행합니다.
     """
+    # --- 0. 로그 파일 초기화 ---
+    try:
+        console_log_path = os.path.join(PROJECT_ROOT, 'discord', 'logs', 'console.log')
+        with open(console_log_path, 'w', encoding='utf-8') as f:
+            f.write(f"--- Workflow run at {datetime.now(pytz.timezone('Asia/Seoul')).strftime('%Y-%m-%d %H:%M:%S')} ---\n")
+    except Exception:
+        pass # 로그 파일 초기화 실패 시에도 워크플로우는 계속 진행
+
     # --- 0. 분석 조건 설정 (config.ini에서 로드) ---
     screener_index_name = config.get('Screener', 'index_name')
     if len(sys.argv) > 1 and sys.argv[1] in ["SP500", "NASDAQ100"]:
         screener_index_name = sys.argv[1]
     
     screener_rsi_threshold = config.getint('Screener', 'rsi_threshold')
+    screener_use_peg_filter = config.getboolean('Screener', 'use_peg_filter')
+    screener_peg_threshold = config.getfloat('Screener', 'peg_threshold')
     analyzer_min_signals_to_find = config.getint('Analyzer', 'min_signals_to_find')
     analyzer_initial_rsi_threshold = config.getint('Analyzer', 'initial_rsi_threshold')
     analyzer_max_rsi_threshold = screener_rsi_threshold
@@ -72,24 +82,71 @@ def run_investment_workflow():
             continue
     print("\n--- 데이터 로딩 및 계산 완료 ---")
 
+    # --- 1.5단계: 산업별 평균 Forward P/E 계산 ---
+    print("\n--- 1.5단계: 전체 산업별 평균 Forward P/E 계산 시작 ---")
+    sector_pes = {}
+    for i, ticker in enumerate(all_tickers):
+        progress_msg = f"  - 진행: [{i + 1}/{len(all_tickers)}] {ticker} 정보 조회 중..."
+        print(progress_msg, end='\r')
+        try:
+            stock_info = yf.Ticker(ticker).info
+            sector = stock_info.get('sector')
+            forward_pe = stock_info.get('forwardPE')
+            if sector and forward_pe and forward_pe > 0:
+                if sector not in sector_pes:
+                    sector_pes[sector] = []
+                sector_pes[sector].append(forward_pe)
+        except Exception:
+            continue # 정보 조회 실패 시 건너뛰기
+
+    sector_avg_pe = {}
+    for sector, pe_list in sector_pes.items():
+        sector_avg_pe[sector] = sum(pe_list) / len(pe_list)
+    
+    print("\n--- 산업별 평균 P/E 계산 완료 ---")
+    # print(sector_avg_pe) # 디버그 필요시 주석 해제
+
     # --- 2. 저평가 후보 종목 스크리닝 (메모리 기반) ---
     watchlist_data = {}
     print("\n--- 2단계: 저평가 후보 종목 스크리닝 (메모리 기반) ---")
-    for ticker, df in all_ticker_data.items():
-        if not df.empty and 'RSI_14' in df.columns:
-            latest_rsi = df.iloc[-1]['RSI_14']
-            if pd.notna(latest_rsi) and latest_rsi < screener_rsi_threshold:
-                watchlist_data[ticker] = df
+    print(f"[스크리닝 조건] RSI < {screener_rsi_threshold}" + (f" | 0 < PEG < {screener_peg_threshold}" if screener_use_peg_filter else ""))
+
+    for i, (ticker, df) in enumerate(all_ticker_data.items()):
+        progress_msg = f"  - 진행: [{i + 1}/{len(all_ticker_data)}] {ticker}"
+        print(progress_msg, end='\r')
+
+        if df.empty or 'RSI_14' not in df.columns:
+            continue
+
+        latest_rsi = df.iloc[-1]['RSI_14']
+        if not (pd.notna(latest_rsi) and latest_rsi < screener_rsi_threshold):
+            continue
+
+        # PEG 필터 적용 (필요시)
+        if screener_use_peg_filter:
+            try:
+                stock_info = yf.Ticker(ticker).info
+                peg_ratio = stock_info.get('pegRatio')
+                if not (peg_ratio is not None and 0 < peg_ratio < screener_peg_threshold):
+                    continue # PEG 조건 미충족 시 건너뛰기
+            except Exception as e:
+                # print(f"\n  - {ticker} PEG 정보 조회 오류: {e}") # 디버그 필요시 주석 해제
+                continue # 정보 조회 실패 시 해당 종목은 제외
+
+        # 모든 필터를 통과한 경우에만 추가
+        watchlist_data[ticker] = df
+    
+    print("\n스크리닝 완료!                                  ")
 
     if not watchlist_data:
-        print("\n1단계 스크리닝 결과, 저평가 후보 종목을 찾지 못했습니다.")
+        print("\n2단계 스크리닝 결과, 저평가 후보 종목을 찾지 못했습니다.")
         return
 
-    print(f"\n--- 1단계 결과: 최종 관심 종목 리스트 ({len(watchlist_data)}개) ---")
+    print(f"\n--- 2단계 결과: 최종 관심 종목 리스트 ({len(watchlist_data)}개) ---")
     print(", ".join(watchlist_data.keys()))
 
     # --- 3. 매수 타이밍 포착 (메모리 기반) ---
-    print("\n\n--- 2단계: 매수 타이밍 포착 시작 ---")
+    print("\n\n--- 3단계: 매수 타이밍 포착 시작 ---")
     print(f"[추세 조건] {'엄격 모드' if analyzer_use_strict_filter else '완화 모드'}")
 
     analyzer_rsi_threshold = analyzer_initial_rsi_threshold
@@ -143,12 +200,12 @@ def run_investment_workflow():
         return
 
     unique_signals = sorted(list(set(final_buy_signals)))
-    print(f"\n\n--- 2단계 결과: 기술적 분석 통과 종목 ({len(unique_signals)}개) ---")
+    print(f"\n\n--- 3단계 결과: 기술적 분석 통과 종목 ({len(unique_signals)}개) ---")
     print(", ".join(unique_signals))
 
-    # --- 3단계: 애널리스트 의견 필터링 (옵션) ---
+    # --- 4단계: 애널리스트 의견 필터링 (옵션) ---
     if use_analyst_filter:
-        print("\n--- 3단계: 애널리스트 의견 필터링 시작 (Buy 또는 Strong Buy) ---")
+        print("\n--- 4단계: 애널리스트 의견 필터링 시작 (Buy 또는 Strong Buy) ---")
         fundamental_buy_signals = []
         for ticker in unique_signals:
             print(f"  - {ticker} 펀더멘탈 확인 중...", end='\r')
@@ -169,12 +226,12 @@ def run_investment_workflow():
     else:
         final_signals_to_analyze = unique_signals
 
-    # --- 4. 최종 후보 펀더멘탈 심층 분석 ---
-    print(f"\n\n--- 최종 결과: 지금 매수 신호가 포착된 종목 ({len(final_signals_to_analyze)}개) ---")
+    # --- 5. 최종 후보 펀더멘탈 심층 분석 ---
+    print(f"\n\n--- 4단계 결과: 최종 후보 종목 ({len(final_signals_to_analyze)}개) ---")
     print(", ".join(final_signals_to_analyze))
 
     result_filepath = os.path.join(PROJECT_ROOT, "fundamental_analysis_results.txt")
-    print(f"\n--- 4단계: 최종 후보 펀더멘탈 심층 분석 (결과 파일: {result_filepath}) ---")
+    print(f"\n--- 5단계: 최종 후보 펀더멘탈 심층 분석 (결과 파일: {result_filepath}) ---")
     
     chunk_size = 2
     all_chunks_output = []
@@ -190,7 +247,7 @@ def run_investment_workflow():
             temp_output = io.StringIO()
             sys.stdout = temp_output
             try:
-                get_fundamental_analysis(ticker)
+                get_fundamental_analysis(ticker, sector_avg_pe)
                 sys.stdout.write("-" * 50 + "\n")
             finally:
                 sys.stdout = original_stdout

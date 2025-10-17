@@ -2,13 +2,22 @@ import yfinance as yf
 import pandas_ta as ta
 import pandas as pd
 import sys
+import os
+import configparser
 from fundamental_analyzer import get_fundamental_analysis
 
 def get_combined_analysis(ticker, short_ma=20, mid_ma=50, long_ma=200, rsi_period=14):
     """
     특정 티커에 대한 기술적 분석과 펀더멘탈 분석을 모두 수행하고 출력합니다.
     """
+    # --- 설정 로드 ---
+    config = configparser.ConfigParser()
+    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.ini')
+    config.read(config_path)
+    use_strict_filter = config.getboolean('Analyzer', 'use_strict_filter', fallback=False)
+
     print(f"\n--- {ticker} 종합 분석 시작 ---")
+    print(f"[분석 조건] 추세 필터: {'엄격 모드' if use_strict_filter else '완화 모드'}")
     
     # --- 1. 기술적 분석 ---
     print(f"\n--- 1. 기술적 분석 (Technical Analysis) ---")
@@ -57,24 +66,40 @@ def get_combined_analysis(ticker, short_ma=20, mid_ma=50, long_ma=200, rsi_perio
             bb_lower = last_row.get('BBL_20_2.0')
             bb_upper = last_row.get('BBU_20_2.0')
 
-            # 추세 해석
+            # 추세 해석 (config.ini 설정에 따라 분기)
             trend_status = ""
             if pd.notna(sma_short) and pd.notna(sma_mid) and pd.notna(sma_long):
-                if sma_short > sma_mid and sma_mid > sma_long and current_price > sma_short:
-                    trend_status = "강력한 상승 추세 (정배열)"
-                    position_guidance['buy'] += 2
-                elif current_price > sma_long and sma_mid > sma_long:
-                    trend_status = "상승 추세 (완화된 조건)"
-                    position_guidance['buy'] += 1
-                elif sma_short < sma_mid and sma_mid < sma_long and current_price < sma_short:
-                    trend_status = "강력한 하락 추세 (역배열)"
-                    position_guidance['sell'] += 2
-                elif current_price < sma_long and sma_mid < sma_long:
-                    trend_status = "하락 추세 (완화된 조건)"
-                    position_guidance['sell'] += 1
-                else:
-                    trend_status = "혼조세 또는 횡보 추세"
-                    position_guidance['neutral'] += 1
+                is_strong_uptrend = sma_short > sma_mid and sma_mid > sma_long and current_price > sma_short
+                is_uptrend = current_price > sma_long and sma_mid > sma_long
+                is_strong_downtrend = sma_short < sma_mid and sma_mid < sma_long and current_price < sma_short
+                is_downtrend = current_price < sma_long and sma_mid < sma_long
+
+                if use_strict_filter:
+                    if is_strong_uptrend:
+                        trend_status = "강력한 상승 추세 (정배열)"
+                        position_guidance['buy'] += 2
+                    elif is_strong_downtrend:
+                        trend_status = "강력한 하락 추세 (역배열)"
+                        position_guidance['sell'] += 2
+                    else:
+                        trend_status = "혼조세 또는 횡보 추세 (엄격 모드 기준)"
+                        position_guidance['neutral'] += 1
+                else: # 완화 모드
+                    if is_strong_uptrend:
+                        trend_status = "강력한 상승 추세 (정배열)"
+                        position_guidance['buy'] += 2
+                    elif is_uptrend:
+                        trend_status = "상승 추세 (완화된 조건)"
+                        position_guidance['buy'] += 1
+                    elif is_strong_downtrend:
+                        trend_status = "강력한 하락 추세 (역배열)"
+                        position_guidance['sell'] += 2
+                    elif is_downtrend:
+                        trend_status = "하락 추세 (완화된 조건)"
+                        position_guidance['sell'] += 1
+                    else:
+                        trend_status = "혼조세 또는 횡보 추세"
+                        position_guidance['neutral'] += 1
             else:
                 trend_status = "이동평균선 데이터 부족으로 추세 판단 불가"
             interpretation.append(trend_status)

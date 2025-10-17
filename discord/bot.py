@@ -7,6 +7,9 @@ import asyncio
 import sys
 from discord import app_commands
 
+# --- config_manager.py에서 함수 임포트 ---
+# from config_manager import get_config_display_string, update_config_setting, get_configurable_options, get_keys_by_type, get_choices_for_key, get_key_type
+
 # --- 설정 파일 로드 ---
 def load_config():
     config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'secrets.json')
@@ -25,7 +28,7 @@ if not os.path.exists(log_dir):
     os.makedirs(log_dir)
 
 logger = logging.getLogger('discord')
-logger.setLevel(logging.CRITICAL)
+logger.setLevel(logging.CRITICAL) # Reverted to CRITICAL
 handler = logging.FileHandler(filename=os.path.join(log_dir, 'critical.log'), encoding='utf-8', mode='w')
 handler.setFormatter(logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(message)s'))
 logger.addHandler(handler)
@@ -42,6 +45,7 @@ class MyClient(discord.Client):
     async def setup_hook(self):
         self.tree.copy_global_to(guild=MY_GUILD)
         await self.tree.sync(guild=MY_GUILD)
+        # setup_commands(self.tree, MY_GUILD, logger) # Removed call to setup_commands
 
 intents = discord.Intents.default()
 client = MyClient(intents=intents)
@@ -52,7 +56,7 @@ async def on_ready():
     print(f'로그인: {client.user} (ID: {client.user.id})')
     print('------')
 
-# --- 헬퍼 함수 ---
+# --- 헬퍼 함수 (Moved from commands.py) ---
 def run_analysis_sync(ticker: str) -> str:
     script_path = os.path.join(PROJECT_ROOT, 'combined_analyzer.py')
     result = subprocess.run(
@@ -65,11 +69,10 @@ def run_workflow_sync(index_value: str):
     script_path = os.path.join(PROJECT_ROOT, 'investment_workflow.py')
     subprocess.run([PYTHON_EXECUTABLE, script_path, index_value], cwd=PROJECT_ROOT, check=True, timeout=900)
 
-# --- 명령어 정의 ---
-@client.tree.command()
+# --- 명령어 정의 (Moved from user's working example) ---
+@client.tree.command(name="stock", description="특정 티커의 종합 분석(기술적+펀더멘탈)을 수행합니다.", guild=MY_GUILD)
 @app_commands.describe(ticker='분석할 주식 티커 (예: AAPL)')
 async def stock(interaction: discord.Interaction, ticker: str):
-    """특정 티커의 종합 분석(기술적+펀더멘탈)을 수행합니다."""
     await interaction.response.defer(thinking=True)
     try:
         output = await asyncio.to_thread(run_analysis_sync, ticker)
@@ -81,14 +84,13 @@ async def stock(interaction: discord.Interaction, ticker: str):
         logger.critical(f"/stock 명령어 오류 ({ticker}): {error_message}")
         await interaction.followup.send(f"'{ticker}' 분석 중 오류가 발생했습니다. 관리자가 로그를 확인해야 합니다.")
 
-@client.tree.command()
+@client.tree.command(name="workflow", description="선택한 시장 지수에 대한 전체 투자 분석 워크플로우를 시작합니다.", guild=MY_GUILD)
 @app_commands.describe(index='분석할 시장 지수를 선택합니다.')
 @app_commands.choices(index=[
     discord.app_commands.Choice(name='S&P 500', value='SP500'),
     discord.app_commands.Choice(name='NASDAQ 100', value='NASDAQ100'),
 ])
 async def workflow(interaction: discord.Interaction, index: discord.app_commands.Choice[str]):
-    """선택한 시장 지수에 대한 전체 투자 분석 워크플로우를 시작합니다."""
     await interaction.response.defer(thinking=True)
     try:
         await interaction.followup.send(f"{index.name} 지수에 대한 전체 투자 분석 워크플로우를 시작합니다. 최대 15분까지 소요될 수 있으며, 완료되면 요약 결과를 게시합니다.")
@@ -111,9 +113,8 @@ async def workflow(interaction: discord.Interaction, index: discord.app_commands
         logger.critical(f"/workflow 명령어 오류 ({index.name}): {error_message}")
         await interaction.followup.send(f"워크플로우 실행 중 오류가 발생했습니다. 관리자가 로그를 확인해야 합니다.")
 
-@client.tree.command()
+@client.tree.command(name="report", description="가장 최근에 실행된 워크플로우의 상세 분석 리포트를 확인합니다.", guild=MY_GUILD)
 async def report(interaction: discord.Interaction):
-    """가장 최근에 실행된 워크플로우의 상세 분석 리포트를 확인합니다."""
     await interaction.response.defer(thinking=True)
     try:
         result_filepath = os.path.join(PROJECT_ROOT, "fundamental_analysis_results.txt")
@@ -147,10 +148,8 @@ async def report(interaction: discord.Interaction):
         logger.critical(f"/report 명령어 오류: {error_message}")
         await interaction.followup.send("리포트 생성 중 오류가 발생했습니다. 관리자가 로그를 확인해야 합니다.")
 
-
-
 # --- 봇 실행 ---
 if TOKEN == "YOUR_DISCORD_BOT_TOKEN" or GUILD_ID == 0:
-    print("오류: discord/config.json 파일에 봇 토큰과 서버 ID를 올바르게 입력해주세요.")
+    print("오류: discord/secrets.json 파일에 봇 토큰과 서버 ID를 올바르게 입력해주세요.")
 else:
     client.run(TOKEN, log_handler=handler, log_level=logging.CRITICAL)
