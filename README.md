@@ -90,6 +90,8 @@ python combined_analyzer.py AAPL
 *   `/stock <ticker>`: 특정 티커(예: `AAPL`)에 대한 종합 분석(기술적 + 펀더멘탈) 결과를 즉시 제공합니다.
 *   `/workflow <index>`: 선택한 시장 지수(예: `S&P 500`, `NASDAQ 100`)에 대한 전체 투자 분석 워크플로우를 시작합니다. 분석 완료 후 요약 결과를 게시하며, 상세 리포트는 `/report` 명령어로 확인할 수 있습니다.
 *   `/report`: 가장 최근에 실행된 워크플로우의 상세 펀더멘탈 분석 리포트를 확인합니다.
+*   `/config_view`: `config.ini` 파일의 현재 모든 설정을 확인합니다.
+*   `/config_set <section> <key> <value>`: `config.ini` 파일의 특정 설정을 실시간으로 변경합니다.
 
 ## 파일 구조 및 역할
 
@@ -111,24 +113,13 @@ python combined_analyzer.py AAPL
 ### `discord/` 디렉토리
 
 *   **`discord/bot.py`**: Discord 봇의 메인 로직을 포함합니다. 슬래시 명령어를 처리하고 다른 분석 스크립트를 실행하여 결과를 Discord 채널에 게시합니다.
+*   **`discord/commands.py`**: `/config_view`, `/config_set` 등 설정 관리와 관련된 동적 슬래시 명령어를 정의하고 등록하는 역할을 합니다.
+*   **`discord/config_manager.py`**: `config.ini` 파일을 읽고, 쓰고, 파싱하는 모든 로직을 처리하는 헬퍼 모듈입니다.
 *   **`discord/secrets.json`**: Discord 봇 토큰, 길드 ID 등 민감한 정보를 저장하는 파일입니다. **(Git에 포함되지 않음)**
 
-## (미래 기능) Discord에서 `config.ini` 설정 수정 기능 (현재 비활성화)
+## Discord에서 실시간 설정 변경
 
-이 봇은 원래 Discord 슬래시 명령어를 통해 `config.ini` 파일의 설정을 동적으로 조회하고 수정할 수 있는 기능을 포함하도록 의도되었습니다. 이 기능은 사용자가 봇을 재시작하지 않고도 분석 전략의 매개변수를 변경할 수 있도록 하여 유연성을 높이는 것을 목표로 했습니다.
+이 봇은 Discord 슬래시 명령어를 통해 `config.ini` 파일의 설정을 실시간으로 조회하고 수정할 수 있는 강력한 기능을 제공합니다. 이 기능을 통해 봇을 재시작하지 않고도 분석 전략(RSI 임계값, 필터 사용 여부 등)을 동적으로 변경할 수 있어 매우 유연한 운영이 가능합니다.
 
-**의도된 동작 방식:**
-
-1.  **`/config_view` 명령어:** 현재 `config.ini` 파일의 모든 섹션과 키-값 쌍을 Discord 채널에 표시합니다.
-2.  **동적 `set_<section>_<key>` 명령어:** `config.ini` 파일의 각 설정 항목(예: `set_screener_rsithreshold`, `set_analyzer_usestrictfilter`)에 대해 개별 슬래시 명령어가 자동으로 생성됩니다.
-    *   이 명령어들은 해당 설정의 현재 값과 예상되는 데이터 타입(정수, 실수, 부울, 문자열 또는 미리 정의된 선택지)에 대한 설명을 포함합니다.
-    *   사용자는 명령어 실행 시 새로운 값을 입력하여 `config.ini` 파일을 업데이트할 수 있습니다.
-    *   업데이트 성공 여부와 변경된 내용이 Discord 채널에 피드백됩니다.
-
-**구현 기술:**
-
-이 기능은 `discord.py`의 `app_commands.Command` 및 `app_commands.Option` 객체를 사용하여 `discord/commands.py`에서 동적으로 슬래시 명령어를 생성하고, `discord/config_manager.py`를 통해 `config.ini` 파일을 읽고 쓰는 방식으로 구현되었습니다.
-
-**현재 상태:**
-
-현재 이 기능은 `discord.py` 라이브러리 버전과의 호환성 문제(특히 `app_commands.Option` 속성 관련 `AttributeError` 및 `ImportError`)로 인해 **비활성화**되어 있습니다. 봇의 안정적인 작동을 위해 해당 기능 관련 코드는 임시적으로 제거되었으며, `config.ini` 설정은 파일을 직접 수정하여야 합니다. 향후 `discord.py` 환경 문제가 해결되거나 대체 구현 방안이 마련되면 이 기능을 다시 활성화할 예정입니다.
+*   `/config_view`: 현재 `config.ini` 파일의 모든 설정 값을 Discord 채팅창에서 즉시 확인합니다.
+*   `/config_set <section> <key> <value>`: 지정한 섹션과 키에 해당하는 설정 값을 새로운 값으로 변경합니다. 자동 완성 기능을 지원하여 편리하게 사용할 수 있습니다.

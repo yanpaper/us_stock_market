@@ -6,9 +6,7 @@ import logging
 import asyncio
 import sys
 from discord import app_commands
-
-# --- config_manager.py에서 함수 임포트 ---
-# from config_manager import get_config_display_string, update_config_setting, get_configurable_options, get_keys_by_type, get_choices_for_key, get_key_type
+from commands import setup_commands
 
 # --- 설정 파일 로드 ---
 def load_config():
@@ -44,8 +42,8 @@ class MyClient(discord.Client):
 
     async def setup_hook(self):
         self.tree.copy_global_to(guild=MY_GUILD)
+        setup_commands(self.tree, MY_GUILD, logger)
         await self.tree.sync(guild=MY_GUILD)
-        # setup_commands(self.tree, MY_GUILD, logger) # Removed call to setup_commands
 
 intents = discord.Intents.default()
 client = MyClient(intents=intents)
